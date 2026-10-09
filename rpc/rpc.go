@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	maxArguments       = 8	//clients
+	maxArguments       = 8 //clients
 	maxArgumentBytes   = 1 << 20
 	maxRequestBytes    = 4 << 20
 	defaultCallTimeout = 5 * time.Second
-	handleTimeout = 10 * time.Second	//for go routine - server protection
+	handleTimeout      = 10 * time.Second //for go routine - server protection
 )
 
 type request struct {
@@ -35,13 +35,13 @@ type response struct {
 
 // Server exposes exported methods of a receiver over TCP.
 type Server struct {
-	receiver   any
-	listener   net.Listener		//active nw listener - to ceck on in start
+	receiver any
+	listener net.Listener //active nw listener - to ceck on in start
 	//channels for go routine communication - carying emoty struct vals
-	stopped    chan struct{}	//signal servew should stop
-	acceptDone chan struct{}	//accept loop has finished
+	stopped    chan struct{} //signal servew should stop
+	acceptDone chan struct{} //accept loop has finished
 	workers    sync.WaitGroup
-	mu         sync.Mutex		//mutex -lock before creation
+	mu         sync.Mutex //mutex -lock before creation
 }
 
 // NewServer creates a server for a non-nil pointer receiver.
@@ -59,15 +59,15 @@ func NewServer(receiver any) (*Server, error) {
 // TODO 1: Create the TCP listener, reject duplicate starts, save lifecycle state,
 // and launch the accept loop without blocking the caller.
 // Start begins accepting remote calls at address. Use port 0 to request an available port.
-func (s *Server) Start(address string) error {	//server instance s method
-	s.mu.Lock()		//creation & state protection  	
-	defer s.mu.Unlock()	//to be executed before return 
+func (s *Server) Start(address string) error { //server instance s method
+	s.mu.Lock()         //creation & state protection
+	defer s.mu.Unlock() //to be executed before return
 
-	if s.listener != nil {	//server on - unlock & return
+	if s.listener != nil { //server on - unlock & return
 		return errors.New("server already running")
 	}
-	listener, err := net.Listen("tcp", address)		//start
-	if err != nil {		//handle possible errors starting
+	listener, err := net.Listen("tcp", address) //start
+	if err != nil {                             //handle possible errors starting
 		return err
 	}
 	s.listener = listener
@@ -76,8 +76,6 @@ func (s *Server) Start(address string) error {	//server instance s method
 
 	go s.acceptLoop(listener, s.stopped, s.acceptDone)
 	return nil
-
-
 
 	//return errors.New("TODO: implement Server.Start")
 }
@@ -92,7 +90,6 @@ func (s *Server) Address() string {
 	}
 	return s.listener.Addr().String()
 
-
 	//return ""
 }
 
@@ -104,41 +101,38 @@ func (s *Server) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.listener == nil {	//nth
+	if s.listener == nil { //nth
 		return nil
 	}
-	close(s.stopped)	//broadcast stop signal 
-	err := s.listener.Close()	
-	<-s.acceptDone		//block until accept loop is over
-	s.workers.Wait()	//active handlers
+	close(s.stopped) //broadcast stop signal
+	err := s.listener.Close()
+	<-s.acceptDone   //block until accept loop is over
+	s.workers.Wait() //active handlers
 
 	s.listener, s.stopped, s.acceptDone = nil, nil, nil
 	return err
 
-
-
 	//return errors.New("TODO: implement Server.Stop")
 }
 
-
 func (s *Server) acceptLoop(listener net.Listener, stopped <-chan struct{}, acceptDone chan<- struct{}) {
-	defer close(acceptDone)	//channel to be closed to signal done
+	defer close(acceptDone) //channel to be closed to signal done
 	for {
-		connection, err := listener.Accept()	//waits for and returns nxt conn to listener
+		connection, err := listener.Accept() //waits for and returns nxt conn to listener
 		if err != nil {
-			select {		//Go chooses from channel operations
-			case <-stopped:		//check channel - maybe shut down
+			select { //Go chooses from channel operations
+			case <-stopped: //check channel - maybe shut down
 				return
 			default:
 			}
-			if errors.Is(err, net.ErrClosed) {	//listener closed - shutdown
+			if errors.Is(err, net.ErrClosed) { //listener closed - shutdown
 				return
 			}
-			time.Sleep(10 * time.Millisecond)	//ow wait to avoid rapid retries
-			continue	//loop again
+			time.Sleep(10 * time.Millisecond) //ow wait to avoid rapid retries
+			continue                          //loop again
 		}
-		s.workers.Add(1)	
-		go func() {		//handle this client - loop goes on
+		s.workers.Add(1)
+		go func() { //handle this client - loop goes on
 			defer s.workers.Done()
 			s.handle(connection)
 		}()
@@ -155,7 +149,7 @@ func (s *Server) acceptLoop(listener net.Listener, stopped <-chan struct{}, acce
 // handle reads one request, invokes it, and writes one response.
 func (s *Server) handle(connection net.Conn) {
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(handleTimeout))	//10 sec wait for server to read - discard error
+	_ = connection.SetDeadline(time.Now().Add(handleTimeout)) //10 sec wait for server to read - discard error
 
 	encoder := json.NewEncoder(connection)
 	defer func() {
@@ -193,11 +187,11 @@ func (s *Server) handle(connection net.Conn) {
 func validateRequest(req request) error {
 
 	if req.Method == "" {
-		return errors.New("method is required")
+		return errors.New("method cannot be empty")
 	}
 	for _, ch := range req.Method {
 		if unicode.IsSpace(ch) || unicode.IsControl(ch) {
-			return errors.New("method contains invalid characters")
+			return errors.New("method contains whitespace or control characters")
 		}
 	}
 	if len(req.Args) > maxArguments {
@@ -206,12 +200,12 @@ func validateRequest(req request) error {
 	totalBytes := 0
 	for i, arg := range req.Args {
 		if len(arg) > maxArgumentBytes {
-			return fmt.Errorf("argument %d exceeds maximum size", i)
+			return fmt.Errorf("argument %d larger than the maximum size", i)
 		}
 		totalBytes += len(arg)
 
 		if totalBytes > maxRequestBytes {
-			return errors.New("arguments are too long")
+			return errors.New("arguments are larger than the maximum total size")
 		}
 	}
 
@@ -353,7 +347,6 @@ func (c *Client) Call(method string, out any, args ...any) error {
 	if err := encoder.Encode(req); err != nil {
 		return fmt.Errorf("send RPC request: %w", err)
 	}
-
 
 	var resp response
 	decoder := json.NewDecoder(conn)
