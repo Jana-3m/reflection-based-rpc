@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	maxArguments       = 8
+	maxArguments       = 8	//clients
 	maxArgumentBytes   = 1 << 20
 	maxRequestBytes    = 4 << 20
 	defaultCallTimeout = 5 * time.Second
+	handleTimeout = 10 * time.Second	//for go routine - server protection
 )
 
 type request struct {
@@ -34,11 +35,12 @@ type response struct {
 // Server exposes exported methods of a receiver over TCP.
 type Server struct {
 	receiver   any
-	listener   net.Listener
-	stopped    chan struct{}
-	acceptDone chan struct{}
+	listener   net.Listener		//active nw listener - to ceck on in start
+	//channels for go routine communication - carying emoty struct vals
+	stopped    chan struct{}	//signal servew should stop
+	acceptDone chan struct{}	//accept loop has finished
 	workers    sync.WaitGroup
-	mu         sync.Mutex
+	mu         sync.Mutex		//mutex -lock before creation
 }
 
 // NewServer creates a server for a non-nil pointer receiver.
@@ -56,22 +58,93 @@ func NewServer(receiver any) (*Server, error) {
 // TODO 1: Create the TCP listener, reject duplicate starts, save lifecycle state,
 // and launch the accept loop without blocking the caller.
 // Start begins accepting remote calls at address. Use port 0 to request an available port.
-func (s *Server) Start(address string) error {
-	return errors.New("TODO: implement Server.Start")
+func (s *Server) Start(address string) error {	//server instance s method
+	s.mu.Lock()		//creation & state protection  	
+	defer s.mu.Unlock()	//to be executed before return 
+
+	if s.listener != nil {	//server on - unlock & return
+		return errors.New("server already running")
+	}
+	listener, err := net.Listen("tcp", address)		//start
+	if err != nil {		//handle possible errors starting
+		return err
+	}
+	s.listener = listener
+	s.stopped = make(chan struct{})
+	s.acceptDone = make(chan struct{})
+
+	go s.acceptLoop(listener, s.stopped, s.acceptDone)
+	return nil
+
+
+
+	//return errors.New("TODO: implement Server.Start")
 }
 
 // TODO 2: Return the listener address safely while allowing port 0 discovery.
 // Address returns the address assigned to the running server.
 func (s *Server) Address() string {
-	return ""
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
+
+
+	//return ""
 }
 
 // TODO 3: Close the listener, signal the accept loop, wait for its workers,
 // and leave the server in a state where Start can be called again.
 // Stop stops accepting new connections and waits for active handlers to finish.
 func (s *Server) Stop() error {
-	return errors.New("TODO: implement Server.Stop")
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.listener == nil {	//nth
+		return nil
+	}
+	close(s.stopped)	//broadcast stop signal 
+	err := s.listener.Close()	
+	<-s.acceptDone		//block until accept loop is over
+	s.workers.Wait()	//active handlers
+
+	s.listener, s.stopped, s.acceptDone = nil, nil, nil
+	return err
+
+
+
+	//return errors.New("TODO: implement Server.Stop")
 }
+
+
+func (s *Server) acceptLoop(listener net.Listener, stopped <-chan struct{}, acceptDone chan<- struct{}) {
+	defer close(acceptDone)	//channel to be closed to signal done
+	for {
+		connection, err := listener.Accept()	//waits for and returns nxt conn to listener
+		if err != nil {
+			select {		//Go chooses from channel operations
+			case <-stopped:		//check channel - maybe shut down
+				return
+			default:
+			}
+			if errors.Is(err, net.ErrClosed) {	//listener closed - shutdown
+				return
+			}
+			time.Sleep(10 * time.Millisecond)	//ow wait to avoid rapid retries
+			continue	//loop again
+		}
+		s.workers.Add(1)	
+		go func() {		//handle this client - loop goes on
+			defer s.workers.Done()
+			s.handle(connection)
+		}()
+	}
+}
+
+//-----
 
 // TODO 4: Study this starter request handler, then complete and test the protocol
 // contract. Add tests for malformed JSON, oversized input, remote errors, panics,
@@ -81,6 +154,8 @@ func (s *Server) Stop() error {
 // handle reads one request, invokes it, and writes one response.
 func (s *Server) handle(connection net.Conn) {
 	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(handleTimeout))	//10 sec wait for server to read - discard error
+
 	encoder := json.NewEncoder(connection)
 	defer func() {
 		if recovered := recover(); recovered != nil {
