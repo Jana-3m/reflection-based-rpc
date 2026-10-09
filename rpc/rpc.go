@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const (
@@ -115,7 +116,31 @@ func (s *Server) handle(connection net.Conn) {
 // larger than maxArgumentBytes, and requests larger than maxRequestBytes.
 // validateRequest rejects malformed or abusive requests before reflection runs.
 func validateRequest(req request) error {
-	return errors.New("TODO: implement validateRequest")
+
+	if req.Method == "" {
+		return errors.New("method is required")
+	}
+	for _, ch := range req.Method {
+		if unicode.IsSpace(ch) || unicode.IsControl(ch) {
+			return errors.New("method contains invalid characters")
+		}
+	}
+	if len(req.Args) > maxArguments {
+		return errors.New("too many arguments")
+	}
+	totalBytes := 0
+	for i, arg := range req.Args {
+		if len(arg) > maxArgumentBytes {
+			return fmt.Errorf("argument %d exceeds maximum size", i)
+		}
+		totalBytes += len(arg)
+
+		if totalBytes > maxRequestBytes {
+			return errors.New("arguments are too long")
+		}
+	}
+
+	return nil
 }
 
 // TODO 6: Study and test this starter reflection bridge. Your required work is to
@@ -127,33 +152,47 @@ func validateRequest(req request) error {
 // invoke finds a method, converts JSON arguments to its parameter types, and calls it.
 func (s *Server) invoke(req request) (any, error) {
 	method := reflect.ValueOf(s.receiver).MethodByName(req.Method)
+
 	if !method.IsValid() {
-		return nil, fmt.Errorf("unknown method %q", req.Method)
+		return nil,
+			fmt.Errorf("unknown method %q", req.Method)
 	}
+
 	typeOfMethod := method.Type()
+	//check num of arg
 	if typeOfMethod.NumIn() != len(req.Args) {
-		return nil, fmt.Errorf("method %q expects %d arguments, got %d", req.Method, typeOfMethod.NumIn(), len(req.Args))
+		return nil,
+			fmt.Errorf("method %q expects %d arguments, got %d",
+				req.Method,
+				typeOfMethod.NumIn(), len(req.Args))
 	}
+
 	arguments := make([]reflect.Value, len(req.Args))
+	//decodde json arg to go
 	for index, raw := range req.Args {
 		argument := reflect.New(typeOfMethod.In(index))
+
 		if err := json.Unmarshal(raw, argument.Interface()); err != nil {
 			return nil, fmt.Errorf("argument %d: %v", index, err)
 		}
 		arguments[index] = argument.Elem()
 	}
 	outputs, err := callMethodSafely(method, arguments)
+	//panic
 	if err != nil {
 		return nil, err
 	}
+	//no return value
 	if len(outputs) == 0 {
 		return nil, nil
-	}
-	if last := outputs[len(outputs)-1]; last.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {
+	} //no return value
+	//case of error inside output
+	if last := outputs[len(outputs)-1]; //check if last retu
+	last.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {
 		if !isNilValue(last) {
-			return nil, last.Interface().(error)
+			return nil, last.Interface().(error) //returns the error
 		}
-		outputs = outputs[:len(outputs)-1]
+		outputs = outputs[:len(outputs)-1] // remove error
 	}
 	if len(outputs) == 0 {
 		return nil, nil
@@ -196,6 +235,73 @@ func NewClient(address string) (*Client, error) {
 // TODO 7: Open one connection, apply a deadline, encode the request, read one
 // response, return remote errors, and decode the response into out.
 // Call invokes method and decodes its result into out. Pass nil for no result.
+// Call invokes a remote method and decodes its result into out.
+// Pass nil for out when the method does not return a value.
 func (c *Client) Call(method string, out any, args ...any) error {
-	return errors.New("TODO: implement Client.Call")
+	if method == "" {
+		return errors.New("method cannot be empty")
+	}
+	if c.Address == "" {
+		return errors.New("address cannot be empty")
+	}
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	rawArgs := make([]json.RawMessage, len(args))
+	for i, arg := range args {
+		encoded, err := json.Marshal(arg)
+		if err != nil {
+			return fmt.Errorf("encode argument %d: %w", i, err)
+		}
+		rawArgs[i] = json.RawMessage(encoded)
+	}
+
+	req := request{
+		Method: method,
+		Args:   rawArgs,
+	}
+
+	//one TCP connection.
+	conn, err := net.DialTimeout("tcp", c.Address, timeout)
+	if err != nil {
+		return fmt.Errorf("connect to RPC server: %w", err)
+	}
+	defer conn.Close()
+
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set connection deadline: %w", err)
+	}
+
+	//Send 1request.
+	encoder := json.NewEncoder(conn)
+	if err := encoder.Encode(req); err != nil {
+		return fmt.Errorf("send RPC request: %w", err)
+	}
+
+
+	var resp response
+	decoder := json.NewDecoder(conn)
+	if err := decoder.Decode(&resp); err != nil {
+		return fmt.Errorf("read RPC response: %w", err)
+	}
+	if !resp.OK {
+		if resp.Error == "" {
+			return errors.New("remote call failed without an error message")
+		}
+
+		return fmt.Errorf("remote error: %s", resp.Error)
+	}
+
+	if out == nil {
+		return nil
+	}
+	if len(resp.Value) == 0 {
+		return errors.New("RPC response contains no result")
+	}
+	if err := json.Unmarshal(resp.Value, out); err != nil {
+		return fmt.Errorf("decode RPC result: %w", err)
+	}
+
+	return nil
 }
