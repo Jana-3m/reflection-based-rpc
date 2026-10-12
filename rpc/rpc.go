@@ -15,19 +15,19 @@ import (
 )
 
 const (
-	maxArguments       = 8 //clients
+	maxArguments       = 8 //client calls 
 	maxArgumentBytes   = 1 << 20
 	maxRequestBytes    = 4 << 20
-	defaultCallTimeout = 5 * time.Second
+	defaultCallTimeout = 5 * time.Second	//client wait time for handling
 	handleTimeout      = 10 * time.Second //for go routine - server protection
 )
 
-type request struct {
-	Method string            `json:"method"`
-	Args   []json.RawMessage `json:"args"`
+type request struct {			//json request format
+	Method string            `json:"method"`	
+	Args   []json.RawMessage `json:"args"`	//raw json arg extraction
 }
 
-type response struct {
+type response struct {		//json response format
 	OK    bool            `json:"ok"`
 	Value json.RawMessage `json:"value,omitempty"`
 	Error string          `json:"error,omitempty"`
@@ -35,10 +35,10 @@ type response struct {
 
 // Server exposes exported methods of a receiver over TCP.
 type Server struct {
-	receiver any
-	listener net.Listener //active nw listener - to ceck on in start
-	//channels for go routine communication - carying emoty struct vals
-	stopped    chan struct{} //signal servew should stop
+	receiver any	//object whose methods the server can execute
+	listener net.Listener //active nw listener - to check on in start
+	//channels for go routine communication - carrying empty struct vals
+	stopped    chan struct{} //signal server should stop
 	acceptDone chan struct{} //accept loop has finished
 	workers    sync.WaitGroup
 	mu         sync.Mutex //mutex -lock before creation
@@ -53,7 +53,7 @@ func NewServer(receiver any) (*Server, error) {
 	if value.Kind() != reflect.Pointer || value.IsNil() {
 		return nil, errors.New("receiver must be a non-nil pointer")
 	}
-	return &Server{receiver: receiver}, nil
+	return &Server{receiver: receiver}, nil	//new struct, assigned receiver
 }
 
 // TODO 1: Create the TCP listener, reject duplicate starts, save lifecycle state,
@@ -67,7 +67,7 @@ func (s *Server) Start(address string) error { //server instance s method
 		return errors.New("server already running")
 	}
 	listener, err := net.Listen("tcp", address) //start
-	if err != nil {                             //handle possible errors starting
+	if err != nil {                   //handle possible errors starting (starting server alr running)
 		return err
 	}
 	s.listener = listener
@@ -83,7 +83,7 @@ func (s *Server) Start(address string) error { //server instance s method
 // TODO 2: Return the listener address safely while allowing port 0 discovery.
 // Address returns the address assigned to the running server.
 func (s *Server) Address() string {
-	s.mu.Lock()
+	s.mu.Lock()		//lock before address reads
 	defer s.mu.Unlock()
 	if s.listener == nil {
 		return ""
@@ -128,7 +128,7 @@ func (s *Server) acceptLoop(listener net.Listener, stopped <-chan struct{}, acce
 			if errors.Is(err, net.ErrClosed) { //listener closed - shutdown
 				return
 			}
-			time.Sleep(10 * time.Millisecond) //ow wait to avoid rapid retries
+			time.Sleep(10 * time.Millisecond) //ow wait to avoid rapid retries by server
 			continue                          //loop again
 		}
 		s.workers.Add(1)
@@ -197,7 +197,7 @@ func validateRequest(req request) error {
 	if len(req.Args) > maxArguments {
 		return errors.New("too many arguments")
 	}
-	totalBytes := 0
+	totalBytes := len(req.Method)
 	for i, arg := range req.Args {
 		if len(arg) > maxArgumentBytes {
 			return fmt.Errorf("argument %d larger than the maximum size", i)
