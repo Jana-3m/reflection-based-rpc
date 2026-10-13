@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"io"
 	"bufio"
 	"encoding/json"
 	"errors"
@@ -361,4 +362,42 @@ func testClient(t *testing.T, server *Server) *Client {
 		t.Fatal(err)
 	}
 	return client
+}
+
+func TestBadRequestsDoNotCrashServerOrHangConnection(t *testing.T) {
+	server := startTestServer(t)
+	payloads := map[string]string{
+		"malformed JSON":  "not json\n",
+		"oversized input": `{"method":"Echo","args":["` + strings.Repeat("x", maxArgumentBytes) + `"]}` + "\n",
+		"method panic":    `{"method":"Panic","args":[]}` + "\n",
+	}	//err possibilities
+	for name, payload := range payloads {
+		t.Run(name, func(t *testing.T) {	//subtest
+			connection, err := net.Dial("tcp", server.Address())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer connection.Close()
+			_ = connection.SetDeadline(time.Now().Add(2 * time.Second))	//not wait forever
+			if _, err := connection.Write([]byte(payload)); err != nil {
+				t.Fatal(err)
+			}
+
+			//ReadAll reads till server closes connection, ow hang hits deadline - returns err
+			data, err := io.ReadAll(connection)
+			if err != nil {
+				t.Fatalf("connection left hanging: %v", err)
+			}
+			var result response	//resp is valid json, err = nil result ok, no err
+			if err := json.Unmarshal(data, &result); err != nil || result.OK || result.Error == "" {
+				t.Fatalf("got %q (%v), want an error response", data, err)
+			}
+		})
+	}
+
+	// The server must still work after the bad requests.
+	var sum int
+	if err := testClient(t, server).Call("Add", &sum, 2, 3); err != nil || sum != 5 {
+		t.Fatalf("server broken after bad requests: sum=%d err=%v", sum, err)
+	}
 }
